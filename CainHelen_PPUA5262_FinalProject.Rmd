@@ -1,0 +1,510 @@
+---
+title: "A User's Guide to Pedestrian Accidents and the Pedestrian Risk Score"
+author: "Helen Cain"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(sf)
+library(tidyverse)
+library(ggplot2)
+library(leaflet)
+library(lubridate)
+```
+
+```{r, echo = FALSE, message=FALSE}
+bos_911 <- read.csv('/Users/helencain/Desktop/PPUA_5262/EDA/Read-Me/boston_911_modified') |> select(-1)
+
+blocks <- read_sf('/Users/helencain/Desktop/PPUA_5262/EDA/MIdterm2/Blocks_Boston_2020_BARI/Blocks_Boston_2020_BARI.shp')
+
+# don't use! 
+risk <- read_csv('/Users/helencain/Desktop/PPUA_5262/EDA/MIdterm2/pedestrian_risk.csv') 
+
+bgs <- read_sf('/Users/helencain/Desktop/PPUA_5262/EDA/MakingMaps/Block_Groups_Boston_2020_BARI/Block_Groups_Boston_2020_BARI.shp')
+
+bus_stops<- read_sf('/Users/helencain/Downloads/mbtabus/MBTABUSSTOPS_PT.shp') |> filter(TOWN == "BOSTON") |> select(STOP_ID) |> st_transform(st_crs(bgs))
+
+riders <- read_csv('/Users/helencain/Downloads/MBTA_Bus_Ridership_by_Time_Period%2C_Season%2C_Route_Line%2C_and_Stop_-_Fall.csv') |> filter(day_type_name == "weekday") |> group_by(stop_id) |> summarize(ons = sum(average_ons * num_trips), offs = sum(average_offs * num_trips))
+
+
+```
+
+## Overview
+
+Boston's 911 dispatch office is at the city's front line of response to emergencies and crime. All calls to 911 pass through the hands of the city's dispatchers, who the direct police, fire, and medical services to the scene. The activities of these dispatchers and the emergency responders they work with are tracked through a CAD, or computer-assisted dispatch system, the contents of which can be extremely detailed. CAD logs can contain everything from the exact location from which a call was received, transcripts of calls, which units were dispatched to respond, and how long it took them to arrive. In an age where police accountability and transparency are increasingly in demand from the public, full access to this data could tell analysts and citizens a great deal about the behavior and priorities of dispatchers, police departments, emergency medical providers, and those who train them.
+
+However, it is nearly impossible for outside parties to gain access to this data in its original state. The version of this CAD data that was provided to the Boston Area Research Initiative, and to the Big Data for Cities class at Northeastern University, is heavily redacted and modified. This is understandable due to the sensitive nature of some of these calls, and the identities of callers are rightfully kept private. What we are left with are the very basics: the date and time that the call was received, when officers were dispatched, arrived at, and cleared the scene, as well as extremely basic descriptions of the contents of the call, its assigned priority level, and non-specific geographical location (only zoomed in as far as the block in which the incident occurred).
+
+This lack of specificity in the data can prove a challenge for those who wish to work with it. I, along with other classmates assigned to the same dataset, have found it difficult to answer some of the questions with which we first approached the dataset: for instance, why different priority levels might be assigned to events with the same description, or why dispatch time information is missing from so much of the data. Members of the Roxbury community with whom we have engaged through workshops over the past few months have also expressed frustration with the lack of information they find relevant to their concerns, such as the demographics of callers, indicators of police misconduct, or the outcomes of calls.
+
+There is, even so, plenty of useful information that can be gleaned. The 911 dataset is ideal for categorizing and aggregating different types of 911 events, which can provide users with a birds-eye view of what types of crime and emergencies are reported in different geographical areas and at different times. When analyzed together with other publicly accessible data, these aggregations can serve as a powerful tool: they can be consolidated into easily digestible metrics, compared across different communities to reveal inequities, and analyzed alongside other publicly-available data to find relationships among crime, emergencies, and other factors like infrastructure, the environment, and economic indicators.
+
+Pedestrian accident counts, the creation of which I'll detail in this paper, are just one example of this aggregating technique. I will use these counts counts to illustrate where and when pedestrians were involved in motor vehicle accidents in the year 2024. I can also use the data to generate more robust or abstract metrics, such as the pedestrian risk score, another measure I'll cover in this report. The pedestrian risk score measures the relative risk that a pedestrian will be involved in a traffic accident on any given block, based on a weighted average of pedestrian accident counts, hit and runs, and traffic law violations. Boston is considered a very walkable city, by United States’ standards, and while there are many factors that relate to the walkability of an area, such as sidewalk conditions, convenience and location of amenities, and density, the risk that pedestrians are hit by cars is the most easily measurable from the data in this particular dataset. Roxbury, where some census tracts report public transit ridership upwards of 70%, benefits from walkable streets for commuters. A metric like the pedestrian accident counts or the pedestrian risk score can help city planners decide where to modify existing infrastructure to be more traffic-calming or pedestrian-friendly. It can also alert community members which areas may require increased vigilance, both as a pedestrian and as a driver.
+
+## Measure Construction
+
+The 911 data set includes 625,928 entries, each representing an individual 911 event from calendar year 2024. These events can include calls to 911 from citizens, as well as from law enforcement officers. For instance, situations in which officers have had to call for backup, make arrest reports, or to report that they've exited their vehicle for a walk-and-talk. There are 26 variables that describe these events: a unique identifier `eid`, timing variables (when the call was received, when units were dispatched and arrived to the scene, etc.), basic descriptors of the type of event and its priority level, and its location.
+
+### Pedestrian Accident Counts: Categorization and Aggregation
+
+The `typ_eng` and `sub_eng` columns of the 911 dataset correspond to two variables that assign a type and subtype to each event. These variables can be used to extract specific types of emergencies and events for further analysis. As an example, motor vehicle accidents that involve pedestrians have a `typ_eng` of "MOTOR VEHICLE ACCIDENT" and `sub_eng` that includes the words "PEDESTRIAN STRUCK". I created a variable called `pedestrian`, which designates whether or not a call falls into this category (`0` for no and `1` for yes).
+
+The new `pedestrian` variable can then be aggregated by any number of groupings. For instance, the `month` or `hour` can be extracted from the `date` variable to inspect potential seasonality or daily patterns. You can also group by location, such as census block (`Blk_ID_20`).
+
+### Pedestrian Risk Score
+
+The pedestrian risk score is built in part from an aggregation of pedestrian accident counts, grouped by census block. It uses a weighted average of three incident types that indicate danger to pedestrians: pedestrian accidents, hit and runs, and traffic law violations in order to rank each block from 0 - no risk, to 4 - high risk. Here is a breakdown of each score level:
+
+-   Score 0: blocks that experienced no incidents of any of the relevant types in 2024
+
+-   Score 1: blocks that generally did not experience any pedestrian accidents, but may have reported between 1 and 5 hit-and-runs or traffic law violations
+
+-   Score 2: 0-1 pedestrian accidents and 3-5 hit-and-runs or traffic law violations
+
+-   Score 3: 1-4 pedestrian accidents, and around 4-10 hit-and-runs or traffic law violations
+
+-   Score 4: either more than 4 pedestrian accidents, or abnormally high numbers of hit-and-runs
+
+In order to calculate the pedestrian risk score of the blocks in Boston, I first extracted rows with relevant case types, using the same technique outlined in the previous section. Aside from pedestrian accidents, again represented with the column `pedestrian`, the `hit_and_run` variable was created by indicating calls that included the words "HIT AND RUN" in their subtype, and `violation`, for traffic violations, was similarly created using the phrase "“VIOLATION OF THE MOTOR VEHICLE LAWS".
+
+Next, I grouped my records by census block, or `Blk_ID_20`, as it’s known in the dataset, and created a new dataframe called `blocks_pedestrian_risk`. The `blocks_pedestrian_risk` dataframe retains a column for each block’s census block group (`BG_ID_20`) and tract (`CT_ID_20`), and the `pedestrian`, `hit_and_run`, and `violation` columns, which now contain the sum of these incidents per block.
+
+I calculated a weighted average of the `pedestrian`, `hit_and_run`, and `violation` columns. I chose to give pedestrian accidents 70% weight, and hit and runs 20%, and traffic law violations 10%. Hit and runs point to blocks where accidents happen more frequently, though more accidents overall does not always mean more pedestrian accidents specifically. Traffic law violations cover a wide range of offenses, some of which directly cause danger to pedestrians (speeding, running red lights), and some of which are unrelated (expired license, illegal parking, etc.) Since more specific information about the type of violation cannot be extracted from this dataset, I must be careful not to overvalue this variable. The weighted average, which I have called `weight_avg`, is calculated to be $$\text{weight_avg} = (0.7 * \text{pedestrian}) + (0.2 * \text{hit_and_run}) + (0.1 * \text{violation})$$
+
+Finally, I generated the final `risk_score` by separating the weighted averages into bins. Score 0 had an weighted average of 0, score 1 between 0 and 0.5, 2 between 0.5 and 2, 3 between 2 and 5, and 4 for blocks with a weighted average over 5.
+
+## Analysis
+
+Now that we've constructed variables for counting pedestrian accidents and measuring the risk score of each block, let's take a look at the ways these variables can provide more information about pedestrian safety in Boston. They can be used to find patterns in traffic accidents throughout the city and throughout the year, to indicate which neighborhoods may be in need of interventions, and to explore the relationships between safety, traffic, and infrastructure.
+
+### Distribution
+
+**Pedestrian Accidents**
+
+```{r table, echo=FALSE, message=FALSE}
+risk_blocks <- read_csv('/Users/helencain/Desktop/PPUA_5262/EDA/MIdterm2/pedestrian_risk.csv')
+
+risk_blocks |> select(pedestrian) |> rename("Pedestrian Accidents" = pedestrian) |> summary() 
+```
+
+There were `r sum(bos_911$pedestrian)` calls related to pedestrian-involved accidents in 2024, which can be found by taking the sum of the `pedestrian` column. This is about `r signif(sum(bos_911$pedestrian) / dim(bos_911)[1], digits = 2) * 100` percent of all calls in the dataset (around a quarter of a percent!). Above is the summary of the distribution of pedestrian accidents per census block. At least 75% of all blocks in Boston did not experience any pedestrian accidents in 2024, given that the 3rd quartile value is 0. The maximum number of pedestrian accidents within a single census block is 21. Below, we can see the distribution of pedestrian accidents throughout the year 2024. September and October had the highest volume of crashes, while January had the least. In future studies, this could be compared with data from other years, to see if the seasonal distribution shown in 2024 is a pattern across years.
+
+```{r, echo=FALSE, message=FALSE}
+bos_911 |> filter(pedestrian == 1) |> ggplot(aes(x = month(date, label=TRUE, abbr=TRUE))) + geom_bar( fill = "#2A59DB") + labs(caption = "figure 1: distribution of pedestrian accidents by month", x = "Month", y = "Pedestrian Accidents") + theme(plot.caption = element_text(size = 11, hjust = 0.5))
+```
+
+**Pedestrian Risk Score**
+
+Below is the distribution of pedestrian risk scores by block. The majority of blocks in Boston have a score of 0, and as the score increases, the number of blocks that receive that score decreases quickly, with a steep drop of nearly a thousand blocks between scores 2 and 3. Only 46 block groups had the highest score.
+
+```{r, echo=FALSE, message=FALSE}
+blocks_pedestrian_risk <- read.csv('/Users/helencain/Desktop/PPUA_5262/EDA/MIdterm2/pedestrian_risk.csv') |> mutate(Blk_ID_20 = as.character(Blk_ID_20))
+
+blocks_pedestrian_risk |> ggplot(aes(x = risk_score)) +
+geom_bar(fill = "#27B0F5") +
+labs(x = "Pedestrian Risk Score", y = "Frequency", caption = "figure 2: distribution of risk score by block") + theme(plot.caption = element_text(size = 11, hjust = 0.5))
+```
+
+### Mapping
+
+The best way to view the spatial distribution of both the volume of pedestrian crashes and the pedestrian risk score is with a map. The interactive map below shows the pedestrian risk score of each census block in Boston, and if a specific block is clicked on, a popup will show the number of pedestrian accidents on that block in 2024. The map is currently zoomed into the Roxbury neighborhood, centered around Blue Hill Avenue, but users can zoom out to see the rest of the city.
+
+```{r, echo=FALSE, message=FALSE}
+risk_map <- blocks |> left_join(blocks_pedestrian_risk, by = join_by(GEOID20 == Blk_ID_20)) |> mutate(pedestrian = replace_na(pedestrian, 0), risk_score = replace_na(risk_score, 0))
+
+require(leaflet)
+pal <- colorNumeric(palette='viridis', 
+      domain=risk_map$risk_score)
+
+mymap <- leaflet() |>
+  addProviderTiles("CartoDB.Positron") |>
+  setView(-71.07803949116592, 42.31782775899423, zoom = 14) |>
+  addPolygons(data = risk_map, fillOpacity = 0.3,
+              color = ~pal(risk_map$risk_score),
+              popup = paste0("Pedestrian Crashes: ", risk_map$pedestrian)) |>
+  addLegend(pal = pal,
+            values = risk_map$risk_score,
+                        position = "bottomright",
+                        title = "Pedestrian \nRisk Score",
+                        opacity = 1,
+            bins = 5) |>
+  addMiniMap(position="bottomleft", zoomLevelOffset=-4)
+mymap
+```
+
+From this bird's eye view, one can see problem areas. For instance, there is a yellow cluster of blocks with a score of 4 in Allston near the Boston University campus. The city also appears to have more blocks with higher risk scores (colored green and yellow on the map) in the areas near downtown Boston, including Beacon Hill and the West End. The blocks in Roxbury and immediately surrounding Blue Hill Avenue seem to have quite a few high-risk blocks. Further statistical testing is needed to determine whether or not the areas around Blue Hill Avenue experienced a statistically significant amount of accidents.
+
+### Comparing Groups
+
+To compare the average risk scores between block groups along Blue Hill Avenue with the rest of Boston, I performed a Student's t-test. A t-test is used to determine if there is a statistically significant difference between the means of two populations. First, I calculated the mean risk score per block group, and then I added a Boolean variable that indicates whether or not a block group is touching either side of Blue Hill Avenue. The null hypothesis for this test is that there is no difference in means between the distributions of average risk scores per block group for block groups along Blue Hill Avenue and elsewhere in Boston. The alternative hypothesis is that the difference in means is not zero.
+
+```{r, echo=FALSE, message=FALSE}
+# aggregate by block group
+
+bg_risk <- blocks_pedestrian_risk |> group_by(BG_ID_20) |>
+  summarize(avg_risk = mean(risk_score))
+
+# add boolean column for blue hill avenue block groups
+source('/Users/helencain/Desktop/PPUA_5262/EDA/Read-Me/blue_hill_region.R')
+
+bg_risk$blue_hill <- ifelse(bg_risk$BG_ID_20 %in% blue_hill_cbgs, "yes", "no")
+
+t.test(avg_risk~blue_hill,data=bg_risk)
+```
+
+Above, I've performed a two-sample t-test, comparing the means of the the distributions of average risk scores between block groups along Blue Hill Avenue and elsewhere in Boston. The difference in means is reported to be 0.991 - 1.339 = -0.348, with a 95% confidence interval between -0.481 and -0.215. This confidence interval does not include zero, implying that the alternative hypothesis is supported by the data. Since the p-value for this test is very small, we can confidently say that in 2024, block groups that were not along Blue Hill Avenue had lower average risk scores than block groups along that street (means = 0.991 and 1.339, t = -5.22, p \< .001). A visualization of this difference in means can be seen below.
+
+```{r, echo=FALSE, message=FALSE}
+means<- aggregate(avg_risk~blue_hill,data=bg_risk,mean)
+
+ses <- aggregate(avg_risk~blue_hill, data=bg_risk, function(x) sd(x, na.rm=TRUE)/sqrt(length(!is.na(x)))) 
+names(ses)[2]<-'se_risk'
+means<-merge(means,ses,by='blue_hill')
+means <- transform(means, lower=avg_risk-1.96*se_risk, 
+                   upper=avg_risk+1.96*se_risk)
+
+bar<-ggplot(data=means, aes(x=blue_hill, y=avg_risk)) + 
+  geom_bar(stat="identity",position="dodge", fill="#2A59DB") + 
+  labs(x = 'Blue Hill Ave', y = 'Average Risk Score', caption = 'figure 3: difference in means of average risk score\n for block groups surrounding Blue Hill Avenue and elsewhere in Boston') + theme(plot.caption = element_text(size = 11, hjust = 0.5)) 
+
+bar + geom_errorbar(aes(ymax=upper, ymin=lower),
+              position=position_dodge(.9))
+```
+
+### Comparing variables
+
+Inspired in part by conversations with Roxbury community members, and in part by my own experiences as a pedestrian in the neighborhood, I've chosen to examine the relationship between bus ridership and pedestrian accident counts. While walking along Blue Hill Avenue, I've noticed both a lack of consistent pedestrian-safe infrastructure near bus stops, as well as a tendency for people to engage in dangerous behaviors like jaywalking. Might the number of bus stops, or the amount of people who get on and off them, be factors related to pedestrian accident counts?
+
+For this analysis, I've combined information from two publicly available datasets: a shape file containing the locations of MBTA bus stops and a table that reports the average number of passengers that got on and off at a certain stop during the Fall of 2024 as well as the number of trips in that day. In combining these datasets, as well as a shape file of census block groups in Boston, I've created three new variables, `num_bus_stops` for the number of bus stops in a block group, `ons`, an approximation of the average number of passengers that board buses at the stops in that block group on any given weekday, and `offs`, a similar metric for passengers exiting buses. I will use these three variables for a multivariate linear regression, which tests the strength of a potential linear relationship between a "target" variable, and any number of independent variables. I've chosen pedestrian accident count per block group as my target variable. Pedestrian risk score, which is a factorized transformation of a weighted average, is not well-suited for linear regression analysis. I've performed a logarithm transformation on the pedestrian accident count, since it is a count variable with a non-normal distribution, creating another new variable called `log_pedestrian`.
+
+```{r, echo=FALSE, message=FALSE}
+# import block group geography
+bgs <- read_sf('/Users/helencain/Desktop/PPUA_5262/EDA/MakingMaps/Block_Groups_Boston_2020_BARI/Block_Groups_Boston_2020_BARI.shp')
+
+# prepare ridership data
+riders <- read_csv('/Users/helencain/Downloads/MBTA_Bus_Ridership_by_Time_Period%2C_Season%2C_Route_Line%2C_and_Stop_-_Fall.csv') |> filter(day_type_name == "weekday") |> group_by(stop_id) |> summarize(ons = sum(average_ons * num_trips), offs = sum(average_offs * num_trips))
+
+# prepare bus stop geography
+bus_stops<- read_sf('/Users/helencain/Downloads/mbtabus/MBTABUSSTOPS_PT.shp') |> filter(TOWN == "BOSTON") |> select(STOP_ID) |> st_transform(st_crs(bgs))
+
+# aggregate pedestrian crash counts by block group
+risk_bg <- blocks_pedestrian_risk |> group_by(BG_ID_20) |> mutate(Blk_ID_20 = as.character(Blk_ID_20), BG_ID_20 = as.character(BG_ID_20), CT_ID_20 = as.character(CT_ID_20)) |> summarize(log_pedestrian = log1p(sum(pedestrian))) 
+
+# join bus stop with ridership data
+bus_stops <- left_join(bus_stops, riders, by = join_by(STOP_ID == stop_id)) |> mutate(ons = replace_na(ons, 0), offs = replace_na(offs, 0)) |> arrange(STOP_ID)
+
+# aggregate bus stops by block group 
+bg_bus <- st_join(bgs, bus_stops) |> group_by(GEOID20) |> summarize(num_bus_stops = n(), ons = sum(ons), offs = sum(offs)) |> mutate(ons = replace_na(ons, 0), offs = replace_na(offs, 0))
+
+# join datasets
+risk_join <- left_join(bg_bus, risk_bg, by = join_by(GEOID20 == BG_ID_20))
+
+# perform regression
+risk_lm <- lm(log_pedestrian ~ num_bus_stops + ons + offs, data = risk_join)
+
+summary(risk_lm)
+```
+
+The only statistically significant predictor out of the three variables appears to be the number of bus stops (p \< 0.001). With each bus stop added to a census block group, the number of pedestrian accidents increases by `r signif(exp(5.517e-02) - 1, 3)` The fit of the model with all three predictors explains about 15% in the variations in pedestrian accidents between block groups.
+
+Below, I'll re-run this regression using only the block groups within the Blue Hill Avenue area, to see if perhaps this relationship between bus stops and pedestrian accidents might be stronger in Roxbury specifically.
+
+```{r, echo=FALSE, message=FALSE}
+# add location variable to dataset
+source('/Users/helencain/Desktop/PPUA_5262/EDA/Read-Me/blue_hill_region.R')
+
+risk_join$blue_hill <- ifelse(risk_join$GEOID20 %in% blue_hill_cbgs, "yes", "no")
+
+#perform regression
+blue_hill_lm <- risk_join |> filter(blue_hill == "yes")
+
+risk_lm <- lm(log_pedestrian ~ num_bus_stops + ons + offs, data = blue_hill_lm)
+
+summary(risk_lm)
+```
+
+Looking only at the block groups that touch either side of Blue Hill Avenue, there still isn't a statistically significant relationship between accidents and the number of passengers who get on or off buses. Due to the smaller sample size, the p-value, which measures the statistical significance of the coefficient, has gotten larger for the number of bus stops; it is now .006. However, the relationship between bus stops and accidents has grown stronger: with each bus stop in a block group, the number of accidents now increases by `r signif(exp(9.879e-02) - 1, 3)`, and the r-squared value, which measures the overall fit of the linear model, has increased as well, implying that nearly 30% of the variation in pedestrian accidents can be explained by this model.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# plot scatter and line graph
+ggplot(data=blue_hill_lm, aes(x=num_bus_stops, y=log_pedestrian)) + 
+    geom_point() + labs(x = "Number of Bus Stops per Block Group", y = "Pedestrian Accidents (log(x + 1))", caption = "figure 4: relationship between pedestrian accidents and bus stops\n for block groups around Blue Hill Avenue") +  theme(plot.caption = element_text(size = 11, hjust = 0.5)) + geom_smooth(method=lm)
+```
+
+The figure above shows a very mild positive relationship between pedestrian accidents and bus stops around Blue Hill Avenue, as well. Finding strong linear relationships between variables in naturally occurring data can be very difficult and further analysis will be needed to uncover other factors that may contribute to pedestrian crashes. Suggestions for future studies include proportion of signalized intersections and number of "high-traffic" streets per square kilometer.
+
+## Conclusion
+
+My analysis shows that the blocks around Blue Hill Avenue have a higher average risk score compared with the rest of Boston, and that within Roxbury there is a statistically significant relationship between bus stops and pedestrian accidents. This relationship is not as strong in other neighborhoods. I believe that this is a line of inquiry worth pursuing further: are there factors in infrastructure or pedestrian behavior that are specific to this neighborhood? Further correlations could be run on the influence of the presence of bus lanes or signalized crosswalks near bus stops. Survey studies could also ask bus riders whether they must cross the street to reach their bus stop.
+
+While there is plenty we can learn from the raw counts of pedestrian accidents- specifically where and when they happen in the city, they don't paint a complete picture of pedestrian safety. The pedestrian risk score is an attempt to aggregate multiple dangers, such as reckless driving and fleeing the scene, to add dimension to the dangers pedestrians may face while sharing streets with cars. The pedestrian risk score is a particularly useful tool for visualization: with a five-point scale, it simplifies information into a digestible format for community members to access. It is not a perfect metric, however. Running correlation tests with the pedestrian risk score as a metric can often yield results that contradict those same tests performed on its constituent parts (i.e. raw counts of pedestrian accidents, hit and runs, etc.). I do believe, however, that the pedestrian risk score is a very useful saftey metric for to share with the wider community. Knowing which blocks are high risk may empower citizens to advocate for infrastructure improvements, or consider their own behaviors when driving or walking through Boston.
+
+## Appendix I: Data Dictionary
+
+### Pre-existing variables from the 911 dataset
+
+These variables were used in the creation and analysis of the pedestrian risk score
+
+-   eid: a unique identifier for each 911 call
+
+-   date: the date that a call was received
+
+-   typ_eng, sub_eng: the type and subtype of the call - provide a brief description of the nature of each 911 event
+
+-   Blk_ID_20: the census block from which the 911 call originated
+
+-   BG_ID_20: the census block *group* from which the call originated
+
+-   CT_ID_20: the census tract from which the call originated
+
+### New variables - record level:
+
+-   pedestrian: whether or not a call was related to a pedestrian accident (0 for no, 1 for yes)
+
+-   hit_and_run: whether or not a call was related to a hit and run accident (0 for no, 1 for yes)
+
+-   violation: whether or not a call was related to a traffic law violation (0 for no, 1 for yes)
+
+### New variables - census block level:
+
+-   pedestrian: the total number of pedestrian accidents per block
+
+-   hit_and_run: the total number of hit and run accidents per block
+
+-   violation: the total number of traffic law violations per block
+
+-   weight_avg: the weighted average of pedestrian accidents, hit and runs, and traffic law violations per block
+
+-   risk_score: a categorical variable - weighted averages are sorted into 5 bins. 0: weight_avg of 0, 1: 0 \< weight_avg \< 0.5, 2: 0.5 \< weight_avg \< 2, 3: weight_avg \< 5, and 4: 5 \< weight avg
+
+### New variables - block group level:
+
+-   avg_risk: the average risk score of all blocks within the block group
+
+-   log_pedestrian: a log-transformed count of pedestrian accidents per block group
+
+-   blue_hill: whether or not a block group is adjacent to Blue Hill Avenue ("yes" or "no")
+
+### Pre-existing variables from the bus stop and ridership datasets
+
+These variables were used to assist in linear regression analysis
+
+**Record-level**
+
+-   stop_id: unique variable for each MBTA bus stop
+
+-   day_type_name: the type of day ridership data was aggregated (weekday, Saturday, Sunday)
+
+-   num_trips: the number of trips that pass a given bus stop during the time period
+
+-   average_ons: the average number of boarding passengers per trip at the bus stop
+
+**New variables - block group level**
+
+num_bus_stops: the total number of bus stops in a census block group
+
+ons: the average number of boarding passengers per weekday at all bus stops within the block group
+
+offs: the average number of departing passengers per weekday at all bus stops within the block group
+
+-   average offs: the average number of departing passengers per trip at the bus stop
+
+## Appendix II: Annotated R Syntax
+
+```{r, eval=FALSE, echo=TRUE}
+# load packages
+library(sf)
+library(tidyverse)
+library(ggplot2)
+library(leaflet)
+library(lubridate)
+```
+
+```{r, eval=FALSE, echo=TRUE}
+# load dataset
+bos_911 <- read.csv('/Users/helencain/Desktop/PPUA_5262/EDA/Read-Me/boston_911_modified') |> select(-1)
+```
+
+### Measure Construction
+
+**Pedestrian Accident Counts**
+
+```{r, eval=FALSE, echo=TRUE}
+bos_911$pedestrian <- ifelse(str_detect(bos_911$sub_eng, 'PEDESTRIAN
+STRUCK'), 1, 0)
+```
+
+**Pedestrian Risk Score**
+
+```{r, eval=FALSE, echo=TRUE}
+# Step 1: record-level variables
+
+# pedestrian accidents
+bos_911$pedestrian <- ifelse(str_detect(bos_911$sub_eng, 'PEDESTRIAN
+STRUCK'), 1, 0)
+
+# hit_and_run
+bos_911$hit_and_run <- ifelse(str_detect(bos_911$sub_eng, 'HIT AND
+RUN'), 1, 0)
+
+# traffic law violations
+bos_911$violation <- ifelse(str_detect(bos_911$sub_eng, "^VIOLATION.
++LAWS$"), 1, 0)
+
+# Step 2: aggregate by census blocks
+
+blocks_pedestrian_risk <- bos_911 |> group_by(Blk_ID_20, CT_ID_20) |> summarize(pedestrian = sum(pedestrian), hit_and_run = sum(hit_and_run), violation = sum(violation)) |> mutate(Blk_ID_20 = as.character(Blk_ID_20)) |> mutate(CT_ID_20 = as.character(CT_ID_20))
+
+# Step 3: weighted sum
+
+blocks_pedestrian_risk$weight_avg = (0.7 *
+blocks_pedestrian_risk$pedestrian) + (0.2 *
+blocks_pedestrian_risk$hit_and_run) + (0.1 *
+blocks_pedestrian_risk$violation)
+
+# Step 4: bin values
+
+blocks_pedestrian_risk$risk_score <- ifelse(blocks_pedestrian_risk$weight_avg == 0, 0, ifelse(blocks_pedestrian_risk$weight_avg < 0.5, 1,
+ifelse(blocks_pedestrian_risk$weight_avg < 2, 2,
+ifelse(blocks_pedestrian_risk$weight_avg < 5, 3, 4))))
+```
+
+### Analyses and Visualizations
+
+Table of pedestrian accident counts
+
+```{r, eval=FALSE, echo=TRUE}
+# table of pedestrian accident counts
+blocks_pedestrian_risk |> select(pedestrian) |> rename("Pedestrian Accidents" = pedestrian) |> summary()
+```
+
+Figure 1: pedestrian accidents by month
+
+```{r, eval=FALSE, echo=TRUE}
+bos_911 |> filter(pedestrian == 1) |> ggplot(aes(x = month(date, label=TRUE, abbr=TRUE))) + geom_bar( fill = "#2A59DB") + labs(caption = "figure 1: distribution of pedestrian accidents by month", x = "Month", y = "Pedestrian Accidents") + theme(plot.caption = element_text(size = 11, hjust = 0.5))
+```
+
+Figure 2: distribution of pedestrian risk scores
+
+```{r, eval=FALSE, echo=TRUE}
+blocks_pedestrian_risk |> ggplot(aes(x = risk_score)) +
+geom_bar(fill = "#27B0F5") +
+labs(x = "Pedestrian Risk Score", y = "Frequency", caption = "figure 2: distribution of risk score by block") + theme(plot.caption = element_text(size = 11, hjust = 0.5))
+```
+
+Map:
+
+```{r, eval=FALSE, echo=TRUE}
+# map:
+
+# load shapefile of block geography
+blocks <- read_sf('/Users/helencain/Desktop/PPUA_5262/EDA/MIdterm2/Blocks_Boston_2020_BARI/Blocks_Boston_2020_BARI.shp')
+
+# merge census geography with risk scores
+risk_map <- blocks |> left_join(blocks_pedestrian_risk, by = join_by(GEOID20 == Blk_ID_20)) |> mutate(pedestrian = replace_na(pedestrian, 0), risk_score = replace_na(risk_score, 0))
+
+# create color pallet
+require(leaflet)
+pal <- colorNumeric(palette='viridis', 
+      domain=risk_map$risk_score)
+
+# create map
+mymap <- leaflet() |>
+  addProviderTiles("CartoDB.Positron") |>
+  setView(-71.07803949116592, 42.31782775899423, zoom = 14) |>
+  addPolygons(data = risk_map, fillOpacity = 0.3,
+              color = ~pal(risk_map$risk_score),
+              popup = paste0("Pedestrian Crashes: ", risk_map$pedestrian)) |>
+  addLegend(pal = pal,
+            values = risk_map$risk_score,
+                        position = "bottomright",
+                        title = "Pedestrian \nRisk Score",
+                        opacity = 1,
+            bins = 5) |>
+  addMiniMap(position="bottomleft", zoomLevelOffset=-4)
+mymap
+```
+
+Figure 3: Student's t-test
+
+```{r, eval=FALSE, echo=TRUE}
+
+# aggregate by block group
+bg_risk <- blocks_pedestrian_risk |> group_by(BG_ID_20) |>
+  summarize(avg_risk = mean(risk_score))
+
+# add boolean column for blue hill avenue block groups
+source('/Users/helencain/Desktop/PPUA_5262/EDA/Read-Me/blue_hill_region.R')
+
+bg_risk$blue_hill <- ifelse(bg_risk$BG_ID_20 %in% blue_hill_cbgs, "yes", "no")
+
+# run analysis
+t.test(avg_risk~blue_hill,data=bg_risk)
+
+# create aggregation table of means and confidence intervals 
+means<- aggregate(avg_risk~blue_hill,data=bg_risk,mean)
+ses <- aggregate(avg_risk~blue_hill, data=bg_risk, function(x) sd(x, na.rm=TRUE)/sqrt(length(!is.na(x)))) 
+names(ses)[2]<-'se_risk'
+means <-merge(means,ses,by='blue_hill')
+means <- transform(means, lower=avg_risk-1.96*se_risk, 
+                   upper=avg_risk+1.96*se_risk)
+
+# plot difference in means
+bar<-ggplot(data=means, aes(x=blue_hill, y=avg_risk)) + 
+  geom_bar(stat="identity",position="dodge", fill="#2A59DB") + 
+  labs(x = 'Blue Hill Ave', y = 'Average Risk Score', caption = 'figure 3: difference in means of average risk score\n for block groups surrounding Blue Hill Avenue and elsewhere in Boston') + theme(plot.caption = element_text(size = 11, hjust = 0.5)) 
+
+bar + geom_errorbar(aes(ymax=upper, ymin=lower),
+              position=position_dodge(.9))
+```
+
+Regression 1:
+
+```{r, eval=FALSE, echo=TRUE}
+# import block group geography
+bgs <- read_sf('/Users/helencain/Desktop/PPUA_5262/EDA/MakingMaps/Block_Groups_Boston_2020_BARI/Block_Groups_Boston_2020_BARI.shp')
+
+# import and prepare ridership data
+riders <- read_csv('/Users/helencain/Downloads/MBTA_Bus_Ridership_by_Time_Period%2C_Season%2C_Route_Line%2C_and_Stop_-_Fall.csv') |> filter(day_type_name == "weekday") |> group_by(stop_id) |> summarize(ons = sum(average_ons * num_trips), offs = sum(average_offs * num_trips))
+
+# import and prepare bus stop geography
+bus_stops<- read_sf('/Users/helencain/Downloads/mbtabus/MBTABUSSTOPS_PT.shp') |> filter(TOWN == "BOSTON") |> select(STOP_ID) |> st_transform(st_crs(bgs))
+
+# join bus stop with ridership data
+bus_stops <- left_join(bus_stops, riders, by = join_by(STOP_ID == stop_id)) |> mutate(ons = replace_na(ons, 0), offs = replace_na(offs, 0)) |> arrange(STOP_ID)
+
+# aggregate bus stops by block group 
+bg_bus <- st_join(bgs, bus_stops) |> group_by(GEOID20) |> summarize(num_bus_stops = n(), ons = sum(ons), offs = sum(offs)) |> mutate(ons = replace_na(ons, 0), offs = replace_na(offs, 0))
+
+# aggregate pedestrian crash counts by block group
+risk_bg <- blocks_pedestrian_risk |> group_by(BG_ID_20) |> mutate(Blk_ID_20 = as.character(Blk_ID_20), BG_ID_20 = as.character(BG_ID_20), CT_ID_20 = as.character(CT_ID_20)) |> summarize(log_pedestrian = log1p(sum(pedestrian))) 
+
+# join crash and bus stop datasets
+risk_join <- left_join(bg_bus, risk_bg, by = join_by(GEOID20 == BG_ID_20))
+
+# perform regression
+risk_lm <- lm(log_pedestrian ~ num_bus_stops + ons + offs, data = risk_join)
+
+summary(risk_lm)
+```
+
+Figure 4: regression 2
+
+```{r, eval=FALSE, echo=TRUE}
+# add location variable to dataset
+source('/Users/helencain/Desktop/PPUA_5262/EDA/Read-Me/blue_hill_region.R')
+
+risk_join$blue_hill <- ifelse(risk_join$GEOID20 %in% blue_hill_cbgs, "yes", "no")
+
+#perform regression
+blue_hill_lm <- risk_join |> filter(blue_hill == "yes")
+
+risk_lm <- lm(log_pedestrian ~ num_bus_stops + ons + offs, data = blue_hill_lm)
+
+summary(risk_lm)
+
+# plot scatter and line graph
+ggplot(data=blue_hill_lm, aes(x=num_bus_stops, y=log_pedestrian)) + 
+    geom_point() + labs(x = "Number of Bus Stops per Block Group", y = "Pedestrian Accidents (log(x + 1))", caption = "figure 4: relationship between pedestrian accidents and bus stops\n for block groups around Blue Hill Avenue") +  theme(plot.caption = element_text(size = 11, hjust = 0.5)) + geom_smooth(method=lm)
+```
